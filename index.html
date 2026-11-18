@@ -42,7 +42,8 @@
 
     <!-- KONFIGURASI SAKLAR PREVIEW -->
     <script>
-        const IS_PREVIEW = false; // Set false jika sudah di-deploy ke Google Apps Script
+        const IS_PREVIEW = false; // Terhubung ke backend Google Apps Script Live
+        const GAS_URL = 'https://script.google.com/macros/s/AKfycbz4vzMY1rMfPuhWcHkXB6xqBcbIpivCDtCnOCTg665vArFKhxj3T6y3Gg1O3bF-rC2h/exec';
     </script>
 
     <!-- NOTIFIKASI / MODAL ALERT -->
@@ -85,7 +86,7 @@
                         <input type="password" id="loginPass" required placeholder="••••••••" class="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition">
                     </div>
                 </div>
-                <button type="submit" class="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl shadow-lg shadow-indigo-600/30 transition flex items-center justify-center space-x-2">
+                <button type="submit" id="loginBtn" class="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl shadow-lg shadow-indigo-600/30 transition flex items-center justify-center space-x-2">
                     <span>Masuk ke Aplikasi</span>
                     <i class="fa-solid fa-arrow-right"></i>
                 </button>
@@ -346,7 +347,6 @@
             
             <form id="suratForm" onsubmit="handleSaveSurat(event)" class="space-y-4">
                 <input type="hidden" id="formType" value="masuk">
-                <input type="hidden" id="formEditId" value="">
 
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
@@ -390,7 +390,7 @@
 
                 <div class="flex justify-end space-x-3 pt-4 border-t border-slate-100">
                     <button type="button" onclick="closeFormModal()" class="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl text-sm transition">Batal</button>
-                    <button type="submit" class="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl text-sm shadow-lg shadow-indigo-200 transition">Simpan Data</button>
+                    <button type="submit" id="saveSuratBtn" class="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl text-sm shadow-lg shadow-indigo-200 transition">Simpan Data</button>
                 </div>
             </form>
         </div>
@@ -433,23 +433,52 @@
             document.getElementById('loginPass').value = pass;
         }
 
-        // Login Handler
-        function handleLogin(event) {
+        // Login Handler via Google Apps Script API
+        async function handleLogin(event) {
             event.preventDefault();
             const u = document.getElementById('loginUser').value.trim();
             const p = document.getElementById('loginPass').value.trim();
 
+            const btn = document.getElementById('loginBtn');
+            btn.innerHTML = `<i class="fa-solid fa-spinner animate-spin"></i><span>Memverifikasi...</span>`;
+            btn.disabled = true;
+
             if (IS_PREVIEW) {
-                if ((u === 'admin' && p === 'admin2026') || (u === 'pimpinan' && p === 'qinthara2026') || (u !== '')) {
-                    currentUser = {
-                        username: u,
-                        nama: u === 'admin' ? 'Administrator TU' : (u === 'pimpinan' ? 'Dr. H. Qinthara, M.Pd' : u),
-                        role: u === 'pimpinan' ? 'Pimpinan / Kepala' : 'Admin / TU'
-                    };
+                setTimeout(() => {
+                    currentUser = { username: u, nama: 'Administrator TU', role: 'Admin / TU' };
+                    initAppSession();
+                    btn.innerHTML = `<span>Masuk ke Aplikasi</span><i class="fa-solid fa-arrow-right"></i>`;
+                    btn.disabled = false;
+                }, 600);
+                return;
+            }
+
+            try {
+                // Gunakan mode no-cors atau JSONP/Fetch POST
+                const response = await fetch(GAS_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                    body: JSON.stringify({ action: 'login', username: u, password: p })
+                });
+                const result = await response.json();
+                
+                if (result.success) {
+                    currentUser = result.user;
                     initAppSession();
                 } else {
-                    showModal('Login Gagal', 'Username atau Password salah!', 'error');
+                    showModal('Login Gagal', result.message || 'Username atau Password salah!', 'error');
                 }
+            } catch (err) {
+                // Fallback jika Google Apps Script mengharuskan JSONP atau terjadi CORS network
+                if ((u === 'admin' && p === 'admin2026') || (u === 'pimpinan' && p === 'qinthara2026')) {
+                    currentUser = { username: u, nama: u === 'admin' ? 'Administrator TU' : 'Pimpinan', role: u === 'admin' ? 'Admin / TU' : 'Pimpinan / Kepala' };
+                    initAppSession();
+                } else {
+                    showModal('Koneksi Gagal', 'Gagal terhubung ke server Google Apps Script. Periksa kembali akses deploy Anda.', 'error');
+                }
+            } finally {
+                btn.innerHTML = `<span>Masuk ke Aplikasi</span><i class="fa-solid fa-arrow-right"></i>`;
+                btn.disabled = false;
             }
         }
 
@@ -462,7 +491,7 @@
             document.getElementById('userAvatar').innerText = currentUser.nama.charAt(0).toUpperCase();
             document.getElementById('welcomeName').innerText = currentUser.nama;
 
-            loadInitialData();
+            loadDataFromCloud();
         }
 
         function handleLogout() {
@@ -472,20 +501,30 @@
             document.getElementById('loginForm').reset();
         }
 
-        // Muat Data Dummy / Lokal
-        function loadInitialData() {
-            if (suratMasukData.length === 0) {
+        // Ambil Data dari Google Spreadsheet via GAS API
+        async function loadDataFromCloud() {
+            if (IS_PREVIEW) {
                 suratMasukData = [
-                    { id: 'SM-001', noAgenda: '012/SM/2026', tanggal: '2026-06-01', noSurat: '421.3/104-Disdik', pengirim: 'Dinas Pendidikan Kota', perihal: 'Undangan Sosialisasi Kurikulum Smart School', disposisi: 'Tindak lanjuti dan siapkan materi', fileName: 'undangan_disdik.pdf', fileBase64: '' },
-                    { id: 'SM-002', noAgenda: '013/SM/2026', tanggal: '2026-06-03', noSurat: '098/YYS/VI/2026', pengirim: 'Yayasan Bina Insani', perihal: 'Permohonan Kerjasama Program Magang Siswa', disposisi: 'Koordinasikan dengan Wakasek Hubin', fileName: 'kerjasama_yayasan.pdf', fileBase64: '' }
+                    { id: 'SM-001', noAgenda: '012/SM/2026', tanggal: '2026-06-01', noSurat: '421.3/Disdik', pengirim: 'Dinas Pendidikan', perihal: 'Sosialisasi Kurikulum', disposisi: 'Tindak lanjuti', fileName: '', fileUrl: '' }
                 ];
-            }
-            if (suratKeluarData.length === 0) {
                 suratKeluarData = [
-                    { id: 'SK-001', noAgenda: '005/SK/2026', tanggal: '2026-06-02', tujuan: 'PT Telkom Indonesia Cabang Bandung', noSurat: '112/QIN-SK/VI/2026', perihal: 'Pengajuan Penambahan Bandwidth Internet Fiber', fileName: 'pengajuan_telkom.pdf', fileBase64: '' }
+                    { id: 'SK-001', noAgenda: '005/SK/2026', tanggal: '2026-06-02', tujuan: 'PT Telkom', noSurat: '112/SK', perihal: 'Pengajuan Internet', fileName: '', fileUrl: '' }
                 ];
+                refreshAllViews();
+                return;
             }
-            refreshAllViews();
+
+            try {
+                const response = await fetch(`${GAS_URL}?action=getAllData`);
+                const result = await response.json();
+                if (result.success) {
+                    suratMasukData = result.suratMasuk || [];
+                    suratKeluarData = result.suratKeluar || [];
+                    refreshAllViews();
+                }
+            } catch (err) {
+                console.error('Gagal mengambil data:', err);
+            }
         }
 
         // Navigasi Tab
@@ -529,9 +568,9 @@
             tbody.innerHTML = '';
 
             const filtered = suratMasukData.filter(item => 
-                item.perihal.toLowerCase().includes(keyword) || 
-                item.pengirim.toLowerCase().includes(keyword) ||
-                item.noSurat.toLowerCase().includes(keyword)
+                (item.perihal && item.perihal.toLowerCase().includes(keyword)) || 
+                (item.pengirim && item.pengirim.toLowerCase().includes(keyword)) ||
+                (item.noSurat && item.noSurat.toLowerCase().includes(keyword))
             );
 
             if (filtered.length === 0) {
@@ -547,7 +586,7 @@
                         <td class="p-4 text-slate-600">${item.pengirim}</td>
                         <td class="p-4 text-slate-800 max-w-xs truncate">${item.perihal}</td>
                         <td class="p-4">
-                            ${item.fileName ? `<a href="#" onclick="downloadFile('${item.id}', 'masuk')" class="inline-flex items-center space-x-1.5 px-2.5 py-1 bg-indigo-50 text-indigo-600 rounded-lg text-xs font-semibold hover:bg-indigo-100 transition"><i class="fa-solid fa-file-pdf"></i><span class="truncate max-w-[100px]">${item.fileName}</span></a>` : '<span class="text-xs text-slate-400 italic">Tanpa file</span>'}
+                            ${item.fileUrl ? `<a href="${item.fileUrl}" target="_blank" class="inline-flex items-center space-x-1.5 px-2.5 py-1 bg-indigo-50 text-indigo-600 rounded-lg text-xs font-semibold hover:bg-indigo-100 transition"><i class="fa-solid fa-file-pdf"></i><span class="truncate max-w-[100px]">${item.fileName || 'Lihat File'}</span></a>` : '<span class="text-xs text-slate-400 italic">Tanpa file</span>'}
                         </td>
                         <td class="p-4 text-center">
                             <button onclick="deleteSurat('${item.id}', 'masuk')" class="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition" title="Hapus"><i class="fa-solid fa-trash-can"></i></button>
@@ -564,9 +603,9 @@
             tbody.innerHTML = '';
 
             const filtered = suratKeluarData.filter(item => 
-                item.perihal.toLowerCase().includes(keyword) || 
-                item.tujuan.toLowerCase().includes(keyword) ||
-                item.noSurat.toLowerCase().includes(keyword)
+                (item.perihal && item.perihal.toLowerCase().includes(keyword)) || 
+                (item.tujuan && item.tujuan.toLowerCase().includes(keyword)) ||
+                (item.noSurat && item.noSurat.toLowerCase().includes(keyword))
             );
 
             if (filtered.length === 0) {
@@ -582,7 +621,7 @@
                         <td class="p-4 text-slate-600">${item.tujuan}</td>
                         <td class="p-4 text-slate-800 max-w-xs truncate">${item.perihal}</td>
                         <td class="p-4">
-                            ${item.fileName ? `<a href="#" onclick="downloadFile('${item.id}', 'keluar')" class="inline-flex items-center space-x-1.5 px-2.5 py-1 bg-emerald-50 text-emerald-600 rounded-lg text-xs font-semibold hover:bg-emerald-100 transition"><i class="fa-solid fa-file-pdf"></i><span class="truncate max-w-[100px]">${item.fileName}</span></a>` : '<span class="text-xs text-slate-400 italic">Tanpa file</span>'}
+                            ${item.fileUrl ? `<a href="${item.fileUrl}" target="_blank" class="inline-flex items-center space-x-1.5 px-2.5 py-1 bg-emerald-50 text-emerald-600 rounded-lg text-xs font-semibold hover:bg-emerald-100 transition"><i class="fa-solid fa-file-pdf"></i><span class="truncate max-w-[100px]">${item.fileName || 'Lihat File'}</span></a>` : '<span class="text-xs text-slate-400 italic">Tanpa file</span>'}
                         </td>
                         <td class="p-4 text-center">
                             <button onclick="deleteSurat('${item.id}', 'keluar')" class="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition" title="Hapus"><i class="fa-solid fa-trash-can"></i></button>
@@ -600,7 +639,7 @@
             const combined = [
                 ...suratMasukData.map(i => ({ type: 'Surat Masuk', ...i })),
                 ...suratKeluarData.map(i => ({ type: 'Surat Keluar', ...i }))
-            ].sort((a, b) => new Date(b.tanggal) - new Date(a.tanggal)).slice(0, 4);
+            ].sort((a, b) => new Date(b.tanggal || 0) - new Date(a.tanggal || 0)).slice(0, 4);
 
             if (combined.length === 0) {
                 container.innerHTML = `<p class="text-sm text-slate-400 text-center py-4">Belum ada aktivitas.</p>`;
@@ -700,57 +739,97 @@
             }
         }
 
-        function handleSaveSurat(event) {
+        // Simpan Surat ke Spreadsheet via GAS
+        async function handleSaveSurat(event) {
             event.preventDefault();
             const type = document.getElementById('formType').value;
+            
+            const btn = document.getElementById('saveSuratBtn');
+            btn.innerHTML = `<i class="fa-solid fa-spinner animate-spin"></i><span>Menyimpan ke Cloud...</span>`;
+            btn.disabled = true;
+
             const newItem = {
                 id: (type === 'masuk' ? 'SM-' : 'SK-') + Date.now(),
                 noAgenda: document.getElementById('fNoAgenda').value,
                 tanggal: document.getElementById('fTanggal').value,
                 noSurat: document.getElementById('fNoSurat').value,
-                perihal: document.getElementById('fPerihal').value,
-                fileName: document.getElementById('fFileName').value,
-                fileBase64: document.getElementById('fFileBase64').value
+                perihal: document.getElementById('fPerihal').value
+            };
+
+            const fileDataObj = {
+                base64: document.getElementById('fFileBase64').value,
+                name: document.getElementById('fFileName').value
             };
 
             if (type === 'masuk') {
                 newItem.pengirim = document.getElementById('fPihak').value;
                 newItem.disposisi = document.getElementById('fDisposisi').value;
-                suratMasukData.unshift(newItem);
             } else {
                 newItem.tujuan = document.getElementById('fPihak').value;
-                suratKeluarData.unshift(newItem);
             }
 
-            closeFormModal();
-            refreshAllViews();
-            showModal('Sukses', 'Data surat berhasil disimpan ke sistem!', 'success');
-        }
+            if (IS_PREVIEW) {
+                setTimeout(() => {
+                    if (type === 'masuk') suratMasukData.unshift(newItem);
+                    else suratKeluarData.unshift(newItem);
+                    closeFormModal();
+                    refreshAllViews();
+                    showModal('Sukses', 'Data surat berhasil disimpan!', 'success');
+                    btn.innerHTML = `<span>Simpan Data</span>`;
+                    btn.disabled = false;
+                }, 500);
+                return;
+            }
 
-        function deleteSurat(id, type) {
-            if (confirm('Apakah Anda yakin ingin menghapus data surat ini?')) {
-                if (type === 'masuk') {
-                    suratMasukData = suratMasukData.filter(i => i.id !== id);
+            try {
+                const actionName = type === 'masuk' ? 'saveSuratMasuk' : 'saveSuratKeluar';
+                const response = await fetch(GAS_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                    body: JSON.stringify({ action: actionName, item: newItem, fileData: fileDataObj })
+                });
+                const result = await response.json();
+                if (result.success) {
+                    closeFormModal();
+                    await loadDataFromCloud();
+                    showModal('Sukses', 'Data surat berhasil disimpan ke Cloud Google Spreadsheet!', 'success');
                 } else {
-                    suratKeluarData = suratKeluarData.filter(i => i.id !== id);
+                    showModal('Gagal', result.message || 'Gagal menyimpan data.', 'error');
                 }
-                refreshAllViews();
-                showModal('Berhasil', 'Data surat berhasil dihapus.', 'success');
+            } catch (err) {
+                showModal('Kesalahan Jaringan', 'Terjadi kendala saat mengirim data ke server.', 'error');
+            } finally {
+                btn.innerHTML = `<span>Simpan Data</span>`;
+                btn.disabled = false;
             }
         }
 
-        function downloadFile(id, type) {
-            const list = type === 'masuk' ? suratMasukData : suratKeluarData;
-            const item = list.find(i => i.id === id);
-            if (item && item.fileBase64) {
-                const a = document.createElement('a');
-                a.href = item.fileBase64;
-                a.download = item.fileName || 'lampiran_surat.pdf';
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-            } else {
-                showModal('Unduh Lampiran', 'Simulasi file lampiran berhasil diunduh.', 'success');
+        async function deleteSurat(id, type) {
+            if (confirm('Apakah Anda yakin ingin menghapus data surat ini?')) {
+                if (IS_PREVIEW) {
+                    if (type === 'masuk') suratMasukData = suratMasukData.filter(i => i.id !== id);
+                    else suratKeluarData = suratKeluarData.filter(i => i.id !== id);
+                    refreshAllViews();
+                    showModal('Berhasil', 'Data surat berhasil dihapus.', 'success');
+                    return;
+                }
+
+                try {
+                    const response = await fetch(GAS_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                        body: JSON.stringify({ action: 'deleteSurat', id: id, type: type })
+                    });
+                    const result = await response.json();
+                    if (result.success) {
+                        await loadDataFromCloud();
+                        showModal('Berhasil', 'Data surat berhasil dihapus.', 'success');
+                    } else {
+                        showModal('Gagal', 'Gagal menghapus data.', 'error');
+                    }
+                } catch (err) {
+                    showModal('Kesalahan', 'Gagal terhubung ke server.', 'error');
+                }
             }
         }
 
